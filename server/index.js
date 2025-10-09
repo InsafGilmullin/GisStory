@@ -1,6 +1,7 @@
 // server/index.js
 const fastify = require('fastify')({ logger: true });
 const { Pool } = require('pg');
+const bcrypt = require('bcrypt'); // Добавили bcrypt
 
 // --- Настройка подключения к БД ---
 const pool = new Pool({
@@ -15,31 +16,77 @@ const pool = new Pool({
 fastify.register(require('@fastify/cors'), {
   origin: 'http://localhost:3000',
 });
-
+// --- НОВАЯ СЕКЦИЯ: JWT ---
+fastify.register(require('@fastify/jwt'), {
+  secret: 'a-super-secret-and-long-key-for-jwt' // !! ВАЖНО: В реальном проекте этот ключ должен быть сложным и храниться в секрете
+});
 // =================================================================
 //  ЭНДПОИНТЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ (Users)
 // =================================================================
 
-// POST /users: Регистрация пользователя
-fastify.post('/users', async (request, reply) => {
+// =================================================================
+//  ЭНДПОИНТЫ ДЛЯ АУТЕНТИФИКАЦИИ
+// =================================================================
+
+// POST /register: Регистрация нового пользователя (ОБНОВЛЕНО)
+fastify.post('/register', async (request, reply) => {
   try {
     const { username, email, password } = request.body;
-    const password_hash = password; // Временная заглушка
+
+    // Хешируем пароль перед сохранением
+    const saltRounds = 10;
+    const password_hash = await bcrypt.hash(password, saltRounds);
 
     const newUserQuery = `
       INSERT INTO users (username, email, password_hash)
       VALUES ($1, $2, $3)
-      RETURNING id, username, email, created_at;
+      RETURNING id, username, email;
     `;
     const result = await pool.query(newUserQuery, [username, email, password_hash]);
     reply.code(201).send(result.rows[0]);
   } catch (err) {
     fastify.log.error(err);
-    reply.code(500).send({ error: 'Failed to create user', details: err.message });
+    reply.code(500).send({ error: 'Email or username already exists', details: err.message });
   }
 });
 
-// GET /users/:id: Получение пользователя по ID
+// POST /login: Вход пользователя (НОВЫЙ)
+fastify.post('/login', async (request, reply) => {
+    try {
+        const { email, password } = request.body;
+
+        // 1. Находим пользователя по email
+        const findUserQuery = `SELECT * FROM users WHERE email = $1;`;
+        const result = await pool.query(findUserQuery, [email]);
+
+        if (result.rows.length === 0) {
+            return reply.code(401).send({ error: "Invalid credentials" }); // Неправильный email
+        }
+        const user = result.rows[0];
+
+        // 2. Сравниваем введенный пароль с хешем в базе
+        const passwordMatch = await bcrypt.compare(password, user.password_hash);
+
+        if (!passwordMatch) {
+            return reply.code(401).send({ error: "Invalid credentials" }); // Неправильный пароль
+        }
+
+        // 3. Если все верно, генерируем JWT-токен
+        const token = fastify.jwt.sign({
+            id: user.id,
+            username: user.username,
+            email: user.email
+        });
+
+        reply.send({ token });
+
+    } catch (err) {
+        fastify.log.error(err);
+        reply.code(500).send({ error: "Login failed", details: err.message });
+    }
+});
+
+// GET /users/:id: Получение пользователя по ID (этот эндпоинт можно оставить как есть, если он нужен)
 fastify.get('/users/:id', async (request, reply) => {
     try {
         const { id } = request.params;
@@ -54,7 +101,6 @@ fastify.get('/users/:id', async (request, reply) => {
         reply.code(500).send({ error: 'Failed to retrieve user', details: err.message });
     }
 });
-
 
 // =================================================================
 //  ЭНДПОИНТЫ ДЛЯ ЛЕГЕНД (Legends)
@@ -78,12 +124,30 @@ fastify.post('/legends', async (request, reply) => {
   }
 });
 
-// GET /legends: Получение списка всех легенд
+// GET /legends: Получение списка легенд (ОБНОВЛЕНО для работы с картой)
 fastify.get('/legends', async (request, reply) => {
   try {
-    const getLegendsQuery = `SELECT id, user_id, title, description, ST_AsText(location) as location, created_at FROM legends;`;
-    const result = await pool.query(getLegendsQuery);
+    const { north, south, east, west } = request.query;
+
+    // Если координаты не переданы, отдаем все легенды, как и раньше
+    if (!north || !south || !east || !west) {
+      const getLegendsQuery = `SELECT id, user_id, title, ST_AsText(location) as location, created_at FROM legends;`;
+      const result = await pool.query(getLegendsQuery);
+      return reply.send(result.rows);
+    }
+
+    // Если координаты переданы, используем их для фильтрации
+    const getLegendsInBoundsQuery = `
+      SELECT id, user_id, title, ST_AsText(location) as location, created_at
+      FROM legends
+      WHERE location && ST_MakeEnvelope($1, $2, $3, $4, 4326);
+    `;
+    // ST_MakeEnvelope(west, south, east, north, 4326) - создает прямоугольник по координатам
+    // && - оператор PostGIS, который проверяет "пересечение" геометрий
+
+    const result = await pool.query(getLegendsInBoundsQuery, [west, south, east, north]);
     reply.send(result.rows);
+
   } catch (err) {
     fastify.log.error(err);
     reply.code(500).send({ error: 'Failed to retrieve legends', details: err.message });
