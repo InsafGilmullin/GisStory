@@ -252,6 +252,43 @@ fastify.get('/reports', async (request, reply) => {
     }
 });
 
+// Новый эндпоинт для получения всех историй в формате GeoJSON
+fastify.get('/api/stories', async (request, reply) => {
+  try {
+    // Используем ваш `pool` для выполнения запроса, как и в других эндпоинтах
+    const { rows } = await pool.query(
+      `SELECT json_build_object(
+          'type', 'FeatureCollection',
+          'features', json_agg(
+              json_build_object(
+                  'type', 'Feature',
+                  'id', id,
+                  'geometry', ST_AsGeoJSON(location)::json,
+                  'properties', json_build_object(
+                      'title', title,
+                      'description', description
+                  )
+              )
+          )
+      ) AS geojson
+      FROM public.legends;`
+    );
+
+    // Если в базе нет данных, rows[0].geojson будет null.
+    // Возвращаем пустую FeatureCollection.
+    if (!rows.length || rows[0].geojson === null) {
+      return {
+        type: 'FeatureCollection',
+        features: [],
+      };
+    }
+
+    return rows[0].geojson;
+  } catch (err) {
+    fastify.log.error(err);
+    reply.status(500).send({ error: 'Internal Server Error', details: err.message });
+  }
+});
 
 // --- Запуск сервера ---
 const start = async () => {
