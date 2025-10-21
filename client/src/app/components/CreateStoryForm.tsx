@@ -13,14 +13,20 @@ const CreateStoryForm = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    const token = localStorage.getItem('token'); // 1. Получаем токен
+    if (!token) {
+      setMessage('Вы не авторизованы. Пожалуйста, войдите в систему.');
+      return;
+    }
+
     if (!title || !description || !position) {
       setMessage('Пожалуйста, заполните все поля и выберите точку на карте.');
       return;
     }
 
-    // TODO: Заменить 'user_id' на ID реального пользователя после внедрения аутентификации
+    // 2. Убираем user_id из тела запроса. Бэкенд возьмет его из токена.
     const storyData = {
-      user_id: '12b68669-f726-4eeb-959e-ba75da83756c', // ВРЕМЕННЫЙ ID
       title,
       description,
       longitude: position.lng,
@@ -32,6 +38,8 @@ const CreateStoryForm = () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          // 3. Добавляем заголовок авторизации
+          'Authorization': `Bearer ${token}` 
         },
         body: JSON.stringify(storyData),
       });
@@ -42,7 +50,6 @@ const CreateStoryForm = () => {
 
       const result = await response.json();
       setMessage(`История "${result.title}" успешно создана и отправлена на модерацию!`);
-      // Очищаем форму
       setTitle('');
       setDescription('');
       setPosition(null);
@@ -52,6 +59,7 @@ const CreateStoryForm = () => {
       setMessage('Произошла ошибка. Попробуйте снова.');
     }
   };
+
 
   // Правильный динамический импорт компонента карты
   const CreateMap = useMemo(() => dynamic(

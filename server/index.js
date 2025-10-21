@@ -20,6 +20,14 @@ fastify.register(require('@fastify/cors'), {
 fastify.register(require('@fastify/jwt'), {
   secret: 'a-super-secret-and-long-key-for-jwt' // !! ВАЖНО: В реальном проекте этот ключ должен быть сложным и храниться в секрете
 });
+
+fastify.decorate('authenticate', async function (request, reply) {
+  try {
+    await request.jwtVerify();
+  } catch (err) {
+    reply.send(err);
+  }
+});
 // =================================================================
 //  ЭНДПОИНТЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ (Users)
 // =================================================================
@@ -107,16 +115,26 @@ fastify.get('/users/:id', async (request, reply) => {
 // =================================================================
 
 // POST /legends: Создание новой легенды
-fastify.post('/legends', async (request, reply) => {
+fastify.post('/legends', {
+  // Эта опция "включает" проверку JWT для данного маршрута
+  preHandler: [fastify.authenticate] 
+}, async (request, reply) => {
   try {
-    const { user_id, title, description, longitude, latitude } = request.body;
+    // Теперь мы берем user_id не из тела запроса, а из проверенного токена
+    const user_id = request.user.id; 
+    const { title, description, longitude, latitude } = request.body;
+    
+    // ВАЖНО: Убедитесь, что ваша таблица `legends` использует тип `geography`
+    // Если используется `geometry`, то функция будет `ST_SetSRID(ST_MakePoint($4, $5), 4326)`
     const location = `POINT(${longitude} ${latitude})`;
     const newLegendQuery = `
       INSERT INTO legends (user_id, title, description, location)
       VALUES ($1, $2, $3, ST_GeogFromText($4))
       RETURNING *;
     `;
+    // Обратите внимание, что `user_id` теперь первый параметр ($1)
     const result = await pool.query(newLegendQuery, [user_id, title, description, location]);
+    
     reply.code(201).send(result.rows[0]);
   } catch (err) {
     fastify.log.error(err);
